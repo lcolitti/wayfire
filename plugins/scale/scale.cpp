@@ -73,6 +73,12 @@ struct view_scale_data
     bool was_minimized = false; /* flag to indicate if this view was originally minimized */
 };
 
+struct scale_view_list
+{
+    std::vector<wayfire_toplevel_view> views;
+    std::vector<wayfire_toplevel_view> filtered_views;
+};
+
 /**
  * Scale has the following hard coded bindings are as follows:
  * KEY_ENTER:
@@ -127,6 +133,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     /* true if the currently running scale should include views from
      * all workspaces */
     bool all_workspaces;
+    std::string app_id;
     std::unique_ptr<wf::vswitch::control_bindings_t> workspace_bindings;
     wf::shared_data::ref_ptr_t<wf::move_drag::core_drag_t> drag_helper;
 
@@ -275,7 +282,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     }
 
     /* Activate scale, switch activator modes and deactivate */
-    bool handle_toggle(bool want_all_workspaces)
+    bool handle_toggle(bool want_all_workspaces, std::string want_app_id)
     {
         if (active && (all_same_as_current_workspace_views() ||
                        (want_all_workspaces == this->all_workspaces)))
@@ -285,6 +292,8 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         }
 
         this->all_workspaces = want_all_workspaces;
+        this->app_id = want_app_id;
+
         if (active)
         {
             switch_scale_modes();
@@ -566,7 +575,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             }
         }
 
-        return get_views().front();
+        return get_views().views.front();
     }
 
     /* Process key event */
@@ -751,19 +760,35 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     }
 
     /* Returns a list of views to be scaled */
-    std::vector<wayfire_toplevel_view> get_views()
+    scale_view_list get_views()
     {
-        std::vector<wayfire_toplevel_view> views;
+        scale_view_list view_list;
 
         if (all_workspaces)
         {
-            views = get_all_workspace_views();
+            view_list.views = get_all_workspace_views();
         } else
         {
-            views = get_current_workspace_views();
+            view_list.views = get_current_workspace_views();
         }
 
-        return views;
+        if (!app_id.empty())
+        {
+            auto it = view_list.views.begin();
+            while (it != view_list.views.end())
+            {
+                if ((*it)->get_app_id() != app_id)
+                {
+                    view_list.filtered_views.emplace_back(std::move(*it));
+                    it = view_list.views.erase(it);
+                } else
+                {
+                    ++it;
+                }
+            }
+        }
+
+        return view_list;
     }
 
     /**
@@ -771,7 +796,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
      */
     bool should_scale_view(wayfire_toplevel_view view)
     {
-        auto views = get_views();
+        auto views = get_views().views;
 
         return std::find(
             views.begin(), views.end(), wf::find_topmost_parent(view)) != views.end();
@@ -847,9 +872,10 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     }
 
     /* Filter the views to be arranged by layout_slots() */
-    void filter_views(std::vector<wayfire_toplevel_view>& views)
+    void filter_views(scale_view_list& view_list)
     {
-        std::vector<wayfire_toplevel_view> filtered_views;
+        std::vector<wayfire_toplevel_view>& views = view_list.views;
+        std::vector<wayfire_toplevel_view>& filtered_views = view_list.filtered_views;
         scale_filter_signal signal(views, filtered_views);
         output->emit(&signal);
 
@@ -898,9 +924,12 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     /* Compute target scale layout geometry for all the view transformers
      * and start animating. Initial code borrowed from the compiz scale
      * plugin algorithm */
-    void layout_slots(std::vector<wayfire_toplevel_view> views)
+    void layout_slots(scale_view_list view_list)
     {
         wf::dassert(active || hook_set, "Scale is not active");
+
+        auto& views = view_list.views;
+
         if (!views.size())
         {
             if (!all_workspaces && active)
@@ -911,7 +940,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             return;
         }
 
-        filter_views(views);
+        filter_views(view_list);
 
         auto workarea = output->workarea->get_workarea();
         workarea.x     += outer_margin;
@@ -1144,15 +1173,15 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     wf::signal::connection_t<wf::view_geometry_changed_signal> view_geometry_changed =
         [=] (wf::view_geometry_changed_signal *ev)
     {
-        auto views = get_views();
-        if (!views.size())
+        auto view_list = get_views();
+        if (!view_list.views.size())
         {
             deactivate();
 
             return;
         }
 
-        layout_slots(std::move(views));
+        layout_slots(std::move(view_list));
     };
 
     /* View minimized */
@@ -1306,7 +1335,8 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             return false;
         }
 
-        auto views = get_views();
+        auto view_list = get_views();
+        auto& views = view_list.views;
         if (views.empty())
         {
             output->deactivate_plugin(&grab_interface);
@@ -1466,6 +1496,8 @@ class wayfire_scale_global : public wf::plugin_interface_t,
 {
     wf::ipc_activator_t toggle_ws{"scale/toggle"};
     wf::ipc_activator_t toggle_all{"scale/toggle_all"};
+    wf::ipc_activator_t toggle_app{"scale/toggle_app"};
+    wf::ipc_activator_t toggle_app_all{"scale/toggle_app_all"};
 
   public:
     void init() override
@@ -1473,6 +1505,8 @@ class wayfire_scale_global : public wf::plugin_interface_t,
         this->init_output_tracking();
         toggle_ws.set_handler(toggle_cb);
         toggle_all.set_handler(toggle_all_cb);
+        toggle_app.set_handler(toggle_app_cb);
+        toggle_app_all.set_handler(toggle_app_all_cb);
     }
 
     void fini() override
@@ -1511,26 +1545,42 @@ class wayfire_scale_global : public wf::plugin_interface_t,
         }
     };
 
-    wf::ipc_activator_t::handler_t toggle_cb = [=] (wf::output_t *output, wayfire_view)
+    bool toggle(wf::output_t *output, wayfire_view view, bool want_all_views, bool app_only)
     {
-        if (this->output_instance[output]->handle_toggle(false))
+        std::string want_app_id;
+
+        if (app_only)
+        {
+            want_app_id = view->get_app_id();
+        }
+
+        if (this->output_instance[output]->handle_toggle(want_all_views, want_app_id))
         {
             output->render->schedule_redraw();
             return true;
         }
 
         return false;
+    }
+
+    wf::ipc_activator_t::handler_t toggle_cb = [=] (wf::output_t *output, wayfire_view view)
+    {
+        return toggle(output, view, false, false);
     };
 
-    wf::ipc_activator_t::handler_t toggle_all_cb = [=] (wf::output_t *output, wayfire_view)
+    wf::ipc_activator_t::handler_t toggle_all_cb = [=] (wf::output_t *output, wayfire_view view)
     {
-        if (this->output_instance[output]->handle_toggle(true))
-        {
-            output->render->schedule_redraw();
-            return true;
-        }
+        return toggle(output, view, true, false);
+    };
 
-        return false;
+    wf::ipc_activator_t::handler_t toggle_app_cb = [=] (wf::output_t *output, wayfire_view view)
+    {
+        return toggle(output, view, false, true);
+    };
+
+    wf::ipc_activator_t::handler_t toggle_app_all_cb = [=] (wf::output_t *output, wayfire_view view)
+    {
+        return toggle(output, view, true, true);
     };
 };
 
