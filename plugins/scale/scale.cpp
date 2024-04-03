@@ -109,7 +109,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     wayfire_toplevel_view initial_focus_view;
     /* View that has active focus. */
     wayfire_toplevel_view current_focus_view;
-    // View over which the last input press happened, might become dangling
+    // View over which the last input press happened
     wayfire_toplevel_view last_selected_view;
     std::map<wayfire_toplevel_view, view_scale_data> scale_data;
     wf::option_wrapper_t<int> spacing{"scale/spacing"};
@@ -119,6 +119,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     wf::option_wrapper_t<double> minimized_alpha{"scale/minimized_alpha"};
     wf::option_wrapper_t<bool> allow_scale_zoom{"scale/allow_zoom"};
     wf::option_wrapper_t<bool> include_minimized{"scale/include_minimized"};
+    wf::option_wrapper_t<bool> close_on_new_view{"scale/close_on_new_view"};
 
     /* maximum scale -- 1.0 means we will not "zoom in" on a view */
     const double max_scale_factor = 1.0;
@@ -430,12 +431,17 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     {
         if (view == current_focus_view)
         {
-            current_focus_view = toplevel_cast(wf::get_active_view_for_output(output));
+            current_focus_view = nullptr;
         }
 
         if (view == initial_focus_view)
         {
             initial_focus_view = nullptr;
+        }
+
+        if (view == last_selected_view)
+        {
+            last_selected_view = nullptr;
         }
     }
 
@@ -461,8 +467,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     }
 
     /* Process button event */
-    void process_input(uint32_t button, uint32_t state,
-        wf::pointf_t input_position)
+    void process_input(uint32_t button, uint32_t state, wf::pointf_t input_position)
     {
         if (!active)
         {
@@ -1120,10 +1125,16 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         layout_slots(get_views());
     };
 
-    void handle_new_view(wayfire_toplevel_view view)
+    void handle_new_view(wayfire_toplevel_view view, bool close_scale)
     {
         if (!should_scale_view(view))
         {
+            return;
+        }
+
+        if (close_scale)
+        {
+            deactivate();
             return;
         }
 
@@ -1134,7 +1145,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     {
         if (auto toplevel = wf::toplevel_cast(ev->view))
         {
-            handle_new_view(toplevel);
+            handle_new_view(toplevel, close_on_new_view);
         }
     };
 
@@ -1257,7 +1268,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             }
         }
 
-        wf::get_core().default_wm->focus_raise_view(current_focus_view);
+        wf::get_core().default_wm->focus_raise_view(next_focus);
     }
 
     /* Returns true if any scale animation is running */
@@ -1550,7 +1561,7 @@ class wayfire_scale_global : public wf::plugin_interface_t,
             auto new_output = ev->view->get_output();
             if (new_output && output_instance.count(new_output) && output_instance[new_output]->active)
             {
-                this->output_instance[ev->view->get_output()]->handle_new_view(toplevel);
+                this->output_instance[ev->view->get_output()]->handle_new_view(toplevel, false);
             }
         }
     };

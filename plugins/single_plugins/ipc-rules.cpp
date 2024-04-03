@@ -148,12 +148,6 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         method_repository->register_method("window-rules/get-focused-output", get_focused_output);
         method_repository->register_method("window-rules/close-view", close_view);
         method_repository->connect(&on_client_disconnected);
-        wf::get_core().connect(&on_view_mapped);
-        wf::get_core().connect(&on_view_unmapped);
-        wf::get_core().connect(&on_kbfocus_changed);
-        wf::get_core().connect(&on_title_changed);
-        wf::get_core().connect(&on_app_id_changed);
-        wf::get_core().connect(&on_plugin_activation_changed);
         init_output_tracking();
     }
 
@@ -179,11 +173,13 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
 
     void handle_new_output(wf::output_t *output) override
     {
-        output->connect(&_tiled);
-        output->connect(&_minimized);
-        output->connect(&_fullscreened);
-        output->connect(&on_wset_changed);
-        output->connect(&on_wset_workspace_changed);
+        for (auto& [_, event] : signal_map)
+        {
+            if (event.connected_count)
+            {
+                event.register_output(output);
+            }
+        }
 
         nlohmann::json data;
         data["event"]  = "output-added";
@@ -198,6 +194,83 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         data["output"] = output_to_json(output);
         send_event_to_subscribes(data, data["event"]);
     }
+
+    // Template FOO for efficient management of signals: ensure that only actually listened-for signals
+    // are connected.
+    struct signal_registration_handler
+    {
+        std::function<void()> register_core = [] () {};
+        std::function<void(wf::output_t*)> register_output = [] (wf::output_t*) {};
+        std::function<void()> unregister = [] () {};
+        int connected_count = 0;
+
+        void increase_count()
+        {
+            connected_count++;
+            if (connected_count > 1)
+            {
+                return;
+            }
+
+            register_core();
+            for (auto& wo : wf::get_core().output_layout->get_outputs())
+            {
+                register_output(wo);
+            }
+        }
+
+        void decrease_count()
+        {
+            connected_count--;
+            if (connected_count > 0)
+            {
+                return;
+            }
+
+            unregister();
+        }
+    };
+
+    template<class Signal>
+    static signal_registration_handler get_generic_core_registration_cb(
+        wf::signal::connection_t<Signal> *conn)
+    {
+        return {
+            .register_core = [=] () { wf::get_core().connect(conn); },
+            .unregister    = [=] () { conn->disconnect(); }
+        };
+    }
+
+    template<class Signal>
+    signal_registration_handler get_generic_output_registration_cb(wf::signal::connection_t<Signal> *conn)
+    {
+        return {
+            .register_output = [=] (wf::output_t *wo) { wo->connect(conn); },
+            .unregister = [=] () { conn->disconnect(); }
+        };
+    }
+
+    std::map<std::string, signal_registration_handler> signal_map =
+    {
+        {"view-mapped", get_generic_core_registration_cb(&on_view_mapped)},
+        {"view-unmapped", get_generic_core_registration_cb(&on_view_unmapped)},
+        {"view-set-output", get_generic_core_registration_cb(&on_view_set_output)},
+        {"view-geometry-changed", get_generic_core_registration_cb(&on_view_geometry_changed)},
+        {"view-wset-changed", get_generic_core_registration_cb(&on_view_moved_to_wset)},
+        {"view-focused", get_generic_core_registration_cb(&on_kbfocus_changed)},
+        {"view-title-changed", get_generic_core_registration_cb(&on_title_changed)},
+        {"view-app-id-changed", get_generic_core_registration_cb(&on_app_id_changed)},
+        {"plugin-activation-state-changed", get_generic_core_registration_cb(&on_plugin_activation_changed)},
+        {"output-gain-focus", get_generic_core_registration_cb(&on_output_gain_focus)},
+
+        {"view-tiled", get_generic_output_registration_cb(&_tiled)},
+        {"view-minimized", get_generic_output_registration_cb(&_minimized)},
+        {"view-fullscreened", get_generic_output_registration_cb(&_fullscreened)},
+        {"view-sticky", get_generic_output_registration_cb(&_stickied)},
+        {"view-workspace-changed", get_generic_output_registration_cb(&_view_workspace)},
+        {"output-wset-changed", get_generic_output_registration_cb(&on_wset_changed)},
+        {"wset-workspace-changed", get_generic_output_registration_cb(&on_wset_workspace_changed)},
+    };
 
     wf::ipc::method_callback get_wayfire_configuration_info = [=] (nlohmann::json)
     {
@@ -304,6 +377,11 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
 
     nlohmann::json output_to_json(wf::output_t *o)
     {
+        if (!o)
+        {
+            return nullptr;
+        }
+
         nlohmann::json response;
         response["id"]   = o->get_id();
         response["name"] = o->to_string();
@@ -346,6 +424,7 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         WFJSON_EXPECT_FIELD(data, "id", number_integer);
         WFJSON_OPTIONAL_FIELD(data, "output_id", number_integer);
         WFJSON_OPTIONAL_FIELD(data, "geometry", object);
+        WFJSON_OPTIONAL_FIELD(data, "sticky", boolean);
 
         auto view = wf::ipc::find_view_by_id(data["id"]);
         if (!view)
@@ -381,11 +460,21 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
             toplevel->set_geometry(*geometry);
         }
 
+        if (data.contains("sticky"))
+        {
+            toplevel->set_sticky(data["sticky"]);
+        }
+
         return wf::ipc::json_ok();
     };
 
     nlohmann::json wset_to_json(wf::workspace_set_t *wset)
     {
+        if (!wset)
+        {
+            return nullptr;
+        }
+
         nlohmann::json response;
         response["index"] = wset->get_index();
         response["name"]  = wset->to_string();
@@ -445,8 +534,22 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
                     return wf::ipc::json_error("Event list contains non-string entries!");
                 }
 
-                subscribed_to.insert((std::string)sub);
+                if (signal_map.count(sub))
+                {
+                    subscribed_to.insert((std::string)sub);
+                }
             }
+        } else
+        {
+            for (auto& [ev_name, _] : signal_map)
+            {
+                subscribed_to.insert(ev_name);
+            }
+        }
+
+        for (auto& ev_name : subscribed_to)
+        {
+            signal_map[ev_name].increase_count();
         }
 
         clients[client] = subscribed_to;
@@ -456,6 +559,11 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
     wf::signal::connection_t<wf::ipc::client_disconnected_signal> on_client_disconnected =
         [=] (wf::ipc::client_disconnected_signal *ev)
     {
+        for (auto& ev_name : clients[ev->client])
+        {
+            signal_map[ev_name].decrease_count();
+        }
+
         clients.erase(ev->client);
     };
 
@@ -488,16 +596,52 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         send_view_to_subscribes(ev->view, "view-unmapped");
     };
 
+    wf::signal::connection_t<wf::view_set_output_signal> on_view_set_output =
+        [=] (wf::view_set_output_signal *ev)
+    {
+        nlohmann::json data;
+        data["event"]  = "view-set-output";
+        data["output"] = output_to_json(ev->output);
+        data["view"]   = view_to_json(ev->view);
+        send_event_to_subscribes(data, data["event"]);
+    };
+
+    wf::signal::connection_t<wf::view_geometry_changed_signal> on_view_geometry_changed =
+        [=] (wf::view_geometry_changed_signal *ev)
+    {
+        nlohmann::json data;
+        data["event"] = "view-geometry-changed";
+        data["old-geometry"] = wf::ipc::geometry_to_json(ev->old_geometry);
+        data["view"] = view_to_json(ev->view);
+        send_event_to_subscribes(data, data["event"]);
+    };
+
+    wf::signal::connection_t<wf::view_moved_to_wset_signal> on_view_moved_to_wset =
+        [=] (wf::view_moved_to_wset_signal *ev)
+    {
+        nlohmann::json data;
+        data["event"]    = "view-wset-changed";
+        data["old-wset"] = wset_to_json(ev->old_wset.get());
+        data["new-wset"] = wset_to_json(ev->new_wset.get());
+        data["view"]     = view_to_json(ev->view);
+        send_event_to_subscribes(data, data["event"]);
+    };
+
     wf::signal::connection_t<wf::keyboard_focus_changed_signal> on_kbfocus_changed =
         [=] (wf::keyboard_focus_changed_signal *ev)
     {
         send_view_to_subscribes(wf::node_to_view(ev->new_focus), "view-focused");
     };
 
-    // Maximized rule handler.
+    // Tiled rule handler.
     wf::signal::connection_t<wf::view_tiled_signal> _tiled = [=] (wf::view_tiled_signal *ev)
     {
-        send_view_to_subscribes(ev->view, "view-tiled");
+        nlohmann::json data;
+        data["event"]     = "view-tiled";
+        data["old-edges"] = ev->old_edges;
+        data["new-edges"] = ev->new_edges;
+        data["view"] = view_to_json(ev->view);
+        send_event_to_subscribes(data, data["event"]);
     };
 
     // Minimized rule handler.
@@ -510,6 +654,23 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
     wf::signal::connection_t<wf::view_fullscreen_signal> _fullscreened = [=] (wf::view_fullscreen_signal *ev)
     {
         send_view_to_subscribes(ev->view, "view-fullscreen");
+    };
+
+    // Stickied rule handler.
+    wf::signal::connection_t<wf::view_set_sticky_signal> _stickied = [=] (wf::view_set_sticky_signal *ev)
+    {
+        send_view_to_subscribes(ev->view, "view-sticky");
+    };
+
+    wf::signal::connection_t<wf::view_change_workspace_signal> _view_workspace =
+        [=] (wf::view_change_workspace_signal *ev)
+    {
+        nlohmann::json data;
+        data["event"] = "view-workspace-changed";
+        data["from"]  = wf::ipc::point_to_json(ev->from);
+        data["to"]    = wf::ipc::point_to_json(ev->to);
+        data["view"]  = view_to_json(ev->view);
+        send_event_to_subscribes(data, data["event"]);
     };
 
     wf::signal::connection_t<wf::view_title_changed_signal> on_title_changed =
@@ -532,6 +693,16 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         data["plugin"] = ev->plugin_name;
         data["state"]  = ev->activated;
         data["output"] = ev->output ? (int)ev->output->get_id() : -1;
+        data["output-data"] = output_to_json(ev->output);
+        send_event_to_subscribes(data, data["event"]);
+    };
+
+    wf::signal::connection_t<wf::output_gain_focus_signal> on_output_gain_focus =
+        [=] (wf::output_gain_focus_signal *ev)
+    {
+        nlohmann::json data;
+        data["event"]  = "output-gain-focus";
+        data["output"] = output_to_json(ev->output);
         send_event_to_subscribes(data, data["event"]);
     };
 
@@ -542,6 +713,8 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         data["event"]    = "output-wset-changed";
         data["new-wset"] = ev->new_wset ? (int)ev->new_wset->get_id() : -1;
         data["output"]   = ev->output ? (int)ev->output->get_id() : -1;
+        data["new-wset-data"] = wset_to_json(ev->new_wset.get());
+        data["output-data"]   = output_to_json(ev->output);
         send_event_to_subscribes(data, data["event"]);
     };
 
@@ -554,6 +727,8 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         data["new-workspace"] = wf::ipc::point_to_json(ev->new_viewport);
         data["output"] = ev->output ? (int)ev->output->get_id() : -1;
         data["wset"]   = (ev->output && ev->output->wset()) ? (int)ev->output->wset()->get_id() : -1;
+        data["output-data"] = output_to_json(ev->output);
+        data["wset-data"]   = ev->output ? wset_to_json(ev->output->wset().get()) : nullptr;
         send_event_to_subscribes(data, data["event"]);
     };
 
@@ -624,7 +799,11 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         description["activated"]   = toplevel ? toplevel->activated : false;
         description["sticky"]     = toplevel ? toplevel->sticky : false;
         description["wset-index"] = toplevel && toplevel->get_wset() ? toplevel->get_wset()->get_index() : -1;
-        description["focusable"]  = view->is_focusable();
+        description["min-size"]   = wf::ipc::dimensions_to_json(
+            toplevel ? toplevel->toplevel()->get_min_size() : wf::dimensions_t{0, 0});
+        description["max-size"] = wf::ipc::dimensions_to_json(
+            toplevel ? toplevel->toplevel()->get_max_size() : wf::dimensions_t{0, 0});
+        description["focusable"] = view->is_focusable();
         description["type"] = get_view_type(view);
 
         return description;

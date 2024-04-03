@@ -35,6 +35,12 @@ static bool can_tile_view(wayfire_toplevel_view view)
         return false;
     }
 
+    if ((view->toplevel()->get_min_size() == view->toplevel()->get_max_size()) &&
+        (view->toplevel()->get_min_size().width > 0) && (view->toplevel()->get_min_size().height > 0))
+    {
+        return false;
+    }
+
     return true;
 }
 
@@ -79,18 +85,24 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
     }
 
     /** Check whether the current pointer focus is tiled view */
-    bool has_tiled_focus()
+    wayfire_toplevel_view get_tiled_focus()
     {
-        auto focus = wf::get_core().get_cursor_focus_view();
+        auto focus = toplevel_cast(wf::get_core().get_cursor_focus_view());
+        if (focus && tile::view_node_t::get_node(focus))
+        {
+            return focus;
+        }
 
-        return focus && tile::view_node_t::get_node(focus);
+        return nullptr;
     }
 
     template<class Controller>
     void start_controller()
     {
+        auto tiled_focus = get_tiled_focus();
+
         /* No action possible in this case */
-        if (has_fullscreen_view() || !has_tiled_focus())
+        if (has_fullscreen_view() || !tiled_focus)
         {
             return;
         }
@@ -101,8 +113,7 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
         }
 
         input_grab->grab_input(wf::scene::layer::OVERLAY);
-
-        controller = std::make_unique<Controller>(output->wset().get());
+        controller = std::make_unique<Controller>(output->wset().get(), tiled_focus);
     }
 
     void stop_controller(bool force_stop)
@@ -112,10 +123,10 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
             return;
         }
 
-        input_grab->ungrab_input();
-
         // Deactivate plugin, so that others can react to the events
         output->deactivate_plugin(&grab_interface);
+        input_grab->ungrab_input();
+
         if (!force_stop)
         {
             controller->input_released();
@@ -159,10 +170,10 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
 
     wf::signal::connection_t<view_unmapped_signal> on_view_unmapped = [=] (wf::view_unmapped_signal *ev)
     {
-        stop_controller(true);
         auto node = wf::tile::view_node_t::get_node(ev->view);
         if (node)
         {
+            stop_controller(true);
             detach_view(node);
         }
     };
@@ -413,6 +424,9 @@ class tile_plugin_t : public wf::plugin_interface_t, wf::per_output_tracker_mixi
         {
             wo->erase_data<tile_output_plugin_t>();
         }
+
+        ipc_repo->unregister_method("simple-tile/get-layout");
+        ipc_repo->unregister_method("simple-tile/set-layout");
     }
 
     void stop_controller(std::shared_ptr<wf::workspace_set_t> wset)

@@ -476,6 +476,7 @@ class core_drag_t : public signal::provider_t
     {
         wf::dassert(tentative_grab_position.has_value(),
             "First, the drag operation should be set as pending!");
+        wf::dassert(grab_view->is_mapped(), "Dragged view should be mapped!");
         auto bbox = wf::view_bounding_box_up_to(grab_view, "wobbly");
         wf::point_t rel_grab_pos = {
             int(bbox.x + relative.x * bbox.width),
@@ -653,7 +654,12 @@ class core_drag_t : public signal::provider_t
         wf::get_core().default_wm->set_view_grabbed(view, false);
         view = nullptr;
         all_views.clear();
-        current_output = nullptr;
+        if (current_output)
+        {
+            current_output->render->rem_effect(&on_pre_frame);
+            current_output = nullptr;
+        }
+
         wf::get_core().set_cursor("default");
 
         // Lastly, let the plugins handle what happens on drag end.

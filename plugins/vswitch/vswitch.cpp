@@ -157,7 +157,7 @@ class vswitch : public wf::per_output_plugin_instance_t
             return false;
         }
 
-        if (view && (view->role != wf::VIEW_ROLE_TOPLEVEL))
+        if (view && ((view->role != wf::VIEW_ROLE_TOPLEVEL) || !view->is_mapped()))
         {
             view = nullptr;
         }
@@ -276,10 +276,22 @@ class wf_vswitch_global_plugin_t : public wf::per_output_plugin_t<vswitch>
                 return wf::ipc::json_error("Invalid view or view not toplevel!");
             }
 
+            if (!view->is_mapped())
+            {
+                return wf::ipc::json_error("Cannot grab unmapped view!");
+            }
+
             switch_with_views.push_back(view);
         }
 
-        wo->wset()->request_workspace({data["x"], data["y"]}, switch_with_views);
+        if (output_instance[wo]->set_capabilities(wf::CAPABILITY_MANAGE_COMPOSITOR))
+        {
+            wf::point_t new_viewport = {data["x"], data["y"]};
+            wf::point_t cur_viewport = wo->wset()->get_current_workspace();
+            wf::point_t delta = new_viewport - cur_viewport;
+            output_instance[wo]->add_direction(delta);
+        }
+
         return wf::ipc::json_ok();
     };
 };
