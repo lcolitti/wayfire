@@ -474,6 +474,7 @@ class wf_session_lock_plugin : public wf::plugin_interface_t
           case DESTROYED:
             // Session lock client terminated after unlocking.
             cur_lock.reset();
+            wf::get_core().seat->refocus();
             break;
 
           case ZOMBIE:
