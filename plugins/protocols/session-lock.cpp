@@ -220,7 +220,9 @@ class wf_session_lock_plugin : public wf::plugin_interface_t
             {
                 auto output_state = output_states[ev->output];
                 auto size = ev->output->get_screen_size();
-                if (output_state->surface_node)
+                if (output_state->surface_node &&
+                    ev->changed_fields & (wf::OUTPUT_SCALE_CHANGE | wf::OUTPUT_MODE_CHANGE |
+                                          wf::OUTPUT_TRANSFORM_CHANGE))
                 {
                     output_state->surface_node->configure(size);
                 }
