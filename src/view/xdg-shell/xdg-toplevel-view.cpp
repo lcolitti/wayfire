@@ -9,7 +9,6 @@
 #include "../xdg-shell.hpp"
 #include "wayfire/debug.hpp"
 #include "wayfire/geometry.hpp"
-#include "wayfire/nonstd/tracking-allocator.hpp"
 #include "wayfire/scene.hpp"
 #include "wayfire/seat.hpp"
 #include "wayfire/util.hpp"
@@ -290,10 +289,9 @@ bool wf::xdg_toplevel_view_t::is_mapped() const
 
 void wf::xdg_toplevel_view_t::map()
 {
-    auto surf = xdg_toplevel->base->surface;
-    if (uses_csd.count(surf))
+    if (xdg_toplevel && uses_csd.count(xdg_toplevel->base->surface))
     {
-        this->has_client_decoration = uses_csd[surf];
+        this->has_client_decoration = uses_csd[xdg_toplevel->base->surface];
     }
 
     if (!parent)
@@ -325,7 +323,7 @@ void wf::xdg_toplevel_view_t::handle_toplevel_state_changed(wf::toplevel_state_t
     wf::view_implementation::emit_toplevel_state_change_signals({this}, old_state);
     scene::update(this->get_surface_root_node(), scene::update_flag::GEOMETRY);
 
-    if (!wtoplevel->current().mapped)
+    if (!wf::get_core().tx_manager->is_object_pending(wtoplevel))
     {
         // Drop self-ref => `this` might get deleted
         _self_ref.reset();

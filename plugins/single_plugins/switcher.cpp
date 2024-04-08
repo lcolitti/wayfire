@@ -121,7 +121,7 @@ class WayfireSwitcher : public wf::per_output_plugin_instance_t, public wf::keyb
     {
         class switcher_render_instance_t : public wf::scene::render_instance_t
         {
-            switcher_render_node_t *self;
+            std::shared_ptr<switcher_render_node_t> self;
             wf::scene::damage_callback push_damage;
             wf::signal::connection_t<wf::scene::node_damage_signal> on_switcher_damage =
                 [=] (wf::scene::node_damage_signal *ev)
@@ -132,7 +132,7 @@ class WayfireSwitcher : public wf::per_output_plugin_instance_t, public wf::keyb
           public:
             switcher_render_instance_t(switcher_render_node_t *self, wf::scene::damage_callback push_damage)
             {
-                this->self = self;
+                this->self = std::dynamic_pointer_cast<switcher_render_node_t>(self->shared_from_this());
                 this->push_damage = push_damage;
                 self->connect(&on_switcher_damage);
             }
@@ -905,6 +905,7 @@ class WayfireSwitcher : public wf::per_output_plugin_instance_t, public wf::keyb
     {
         if (output->is_plugin_active(grab_interface.name))
         {
+            input_grab->ungrab_input();
             deinit_switcher();
         }
 
