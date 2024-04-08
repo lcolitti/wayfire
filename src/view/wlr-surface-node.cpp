@@ -123,6 +123,13 @@ wf::scene::wlr_surface_node_t::wlr_surface_node_t(wlr_surface *surface, bool aut
 
         for (auto& [wo, _] : visibility)
         {
+            if (!wo->render)
+            {
+                // Client committed buffer to output that is being deleted?
+                LOGE("Trying to render ", this->surface, " to deleted output ", wo->handle);
+                continue;
+            }
+
             wo->render->schedule_redraw();
         }
     });
