@@ -547,7 +547,13 @@ struct output_layout_output_t
 
         /* It doesn't make sense to transfer to another output if we're
          * going to shut down the compositor */
-        transfer_views(wo, shutdown ? nullptr : get_core().seat->get_active_output());
+        wf::output_t *new_output = shutdown ? nullptr : get_core().seat->get_active_output();
+        transfer_views(wo, new_output);
+        if (new_output &&
+            (wo->wset()->get_workspace_grid_size() == new_output->wset()->get_workspace_grid_size()))
+        {
+            new_output->wset()->set_workspace(wo->wset()->get_current_workspace());
+        }
 
         wf::output_removed_signal data2;
         data2.output = wo;
